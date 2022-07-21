@@ -117,6 +117,7 @@ type ServerCommand struct {
 	flagLogFormat          string
 	flagRecovery           bool
 	flagDev                bool
+	flagDevTLS             bool
 	flagDevRootTokenID     string
 	flagDevListenAddr      string
 	flagDevNoStoreToken    bool
@@ -242,6 +243,15 @@ func (c *ServerCommand) Flags() *FlagSets {
 		Target: &c.flagDev,
 		Usage: "Enable development mode. In this mode, Vault runs in-memory and " +
 			"starts unsealed. As the name implies, do not run \"dev\" mode in " +
+			"production.",
+	})
+
+	f.BoolVar(&BoolVar{
+		Name:   "dev-tls",
+		Target: &c.flagDevTLS,
+		Usage: "Enable TLS development mode. In this mode, Vault runs in-memory and " +
+			"starts unsealed, with a generated TLS CA, certificate and key. " +
+			"As the name implies, do not run \"dev-tls\" mode in " +
 			"production.",
 	})
 
@@ -1026,7 +1036,7 @@ func (c *ServerCommand) Run(args []string) int {
 	}
 
 	// Automatically enable dev mode if other dev flags are provided.
-	if c.flagDevConsul || c.flagDevHA || c.flagDevTransactional || c.flagDevLeasedKV || c.flagDevThreeNode || c.flagDevFourCluster || c.flagDevAutoSeal || c.flagDevKVV1 {
+	if c.flagDevConsul || c.flagDevHA || c.flagDevTransactional || c.flagDevLeasedKV || c.flagDevThreeNode || c.flagDevFourCluster || c.flagDevAutoSeal || c.flagDevKVV1 || c.flagDevTLS {
 		c.flagDev = true
 	}
 
@@ -1062,6 +1072,7 @@ func (c *ServerCommand) Run(args []string) int {
 	// Load the configuration
 	var config *server.Config
 	var err error
+	var dir string
 	if c.flagDev {
 		var devStorageType string
 		switch {
@@ -1076,11 +1087,22 @@ func (c *ServerCommand) Run(args []string) int {
 		default:
 			devStorageType = "inmem"
 		}
+
 		config, err = server.DevConfig(devStorageType)
 		if err != nil {
 			c.UI.Error(err.Error())
 			return 1
 		}
+
+		if c.flagDevTLS {
+			config, dir, err = server.DevTLSConfig(devStorageType)
+		}
+
+		if err != nil {
+			c.UI.Error(err.Error())
+			return 1
+		}
+
 		if c.flagDevListenAddr != "" {
 			config.Listeners[0].Address = c.flagDevListenAddr
 		}
@@ -1495,7 +1517,7 @@ func (c *ServerCommand) Run(args []string) int {
 	}
 
 	// If we're in Dev mode, then initialize the core
-	err = initDevCore(c, &coreConfig, config, core)
+	err = initDevCore(c, &coreConfig, config, core, dir)
 	if err != nil {
 		c.UI.Error(err.Error())
 		return 1
@@ -2604,7 +2626,7 @@ func runListeners(c *ServerCommand, coreConfig *vault.CoreConfig, config *server
 	return nil
 }
 
-func initDevCore(c *ServerCommand, coreConfig *vault.CoreConfig, config *server.Config, core *vault.Core) error {
+func initDevCore(c *ServerCommand, coreConfig *vault.CoreConfig, config *server.Config, core *vault.Core, dir string) error {
 	if c.flagDev && !c.flagDevSkipInit {
 
 		init, err := c.enableDev(core, coreConfig)
@@ -2658,7 +2680,12 @@ func initDevCore(c *ServerCommand, coreConfig *vault.CoreConfig, config *server.
 					c.UI.Warn("You may need to set the following environment variable:")
 					c.UI.Warn("")
 
-					endpointURL := "http://" + config.Listeners[0].Address
+					protocol := "http://"
+					if c.flagDevTLS {
+						protocol = "https://"
+					}
+
+					endpointURL := protocol + config.Listeners[0].Address
 					if runtime.GOOS == "windows" {
 						c.UI.Warn("PowerShell:")
 						c.UI.Warn(fmt.Sprintf("    $env:VAULT_ADDR=\"%s\"", endpointURL))
@@ -2711,6 +2738,14 @@ func initDevCore(c *ServerCommand, coreConfig *vault.CoreConfig, config *server.
 					c.UI.Warn(wrapAtLength(
 						"Development mode should NOT be used in production installations!"))
 					c.UI.Warn("")
+
+					if c.flagDevTLS {
+						c.UI.Warn(wrapAtLength(
+							"Dev TLS mode enabled. You may need to set the following environment variable:"))
+						c.UI.Warn("")
+						c.UI.Warn(fmt.Sprintf("    $ export VAULT_CACERT=%s/vault-ca.pem", dir))
+						c.UI.Warn("")
+					}
 				})
 			}),
 		}
